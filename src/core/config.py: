@@ -1,0 +1,51 @@
+import os
+from dataclasses import dataclass
+from typing import Dict, Any
+from dotenv import load_dotenv
+
+load_dotenv()
+
+@dataclass
+class BotConfig:
+    # API Configuration
+    DERIV_APP_ID: int = 1089  # Deriv demo app ID
+    DERIV_REAL_APP_ID: int = 12345  # Your real app ID
+    API_URL: str = "wss://ws.binaryws.com/websockets/v3"
+    
+    # Trading Parameters
+    MAX_RISK_PER_TRADE: float = 0.01  # 1% of account
+    DAILY_LOSS_LIMIT: float = 0.05    # 5% daily loss limit
+    CONFIDENCE_THRESHOLD: float = 0.6
+    MAX_CONSECUTIVE_LOSSES: int = 5
+    
+    # Risk Management
+    STOP_LOSS_PERCENT: float = 0.02   # 2% stop loss
+    TAKE_PROFIT_PERCENT: float = 0.03 # 3% take profit
+    TRAILING_STOP: bool = True
+    TRAILING_STOP_PERCENT: float = 0.01
+    
+    # Strategy Parameters
+    LOOKBACK_PERIOD: int = 100
+    VOLATILITY_PERIOD: int = 20
+    RSI_PERIOD: int = 14
+    MACD_FAST: int = 12
+    MACD_SLOW: int = 26
+    MACD_SIGNAL: int = 9
+    
+    # Execution Settings
+    MAX_SLIPPAGE: float = 0.0001
+    RETRY_ATTEMPTS: int = 3
+    RETRY_DELAY: float = 1.0
+    
+    # Monitoring
+    HEALTH_CHECK_INTERVAL: int = 30
+    RECONNECT_TIMEOUT: int = 10
+    
+    @classmethod
+    def from_env(cls):
+        return cls(
+            DERIV_APP_ID=int(os.getenv('DERIV_APP_ID', 1089)),
+            MAX_RISK_PER_TRADE=float(os.getenv('MAX_RISK_PER_TRADE', 0.01)),
+            DAILY_LOSS_LIMIT=float(os.getenv('DAILY_LOSS_LIMIT', 0.05)),
+            CONFIDENCE_THRESHOLD=float(os.getenv('CONFIDENCE_THRESHOLD', 0.6))
+        )
