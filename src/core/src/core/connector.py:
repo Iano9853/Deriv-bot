@@ -1,0 +1,163 @@
+import websockets
+import json
+import asyncio
+import logging
+from typing import Dict, Any, Optional, Callable, List
+import time
+from .config import BotConfig
+
+class DerivAPIConnector:
+    def __init__(self, token: str, account_type: str = "demo", config: BotConfig = None):
+        self.config = config or BotConfig()
+        self.token = token
+        self.account_type = account_type
+        self.ws = None
+        self.connected = False
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+        self.ping_interval = 60
+        self.logger = logging.getLogger(__name__)
+        self.subscriptions = set()
+        
+        app_id = self.config.DERIV_APP_ID if account_type == "demo" else self.config.DERIV_REAL_APP_ID
+        self.ws_url = f"{self.config.API_URL}?app_id={app_id}"
+        
+    async def connect(self):
+        """Establish WebSocket connection to Deriv API"""
+        try:
+            self.ws = await websockets.connect(self.ws_url, ping_interval=self.ping_interval)
+            self.connected = True
+            self.reconnect_attempts = 0
+            self.logger.info("Successfully connected to Deriv API")
+            
+            # Authorize connection
+            await self.send_authorize()
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Connection failed: {e}")
+            await self.handle_reconnect()
+            return False
+    
+    async def send_authorize(self):
+        """Authorize the connection with token"""
+        auth_request = {
+            "authorize": self.token
+        }
+        response = await self.send_request(auth_request)
+        if response and "error" not in response:
+            self.logger.info("Successfully authorized with Deriv API")
+            return response
+        else:
+            self.logger.error(f"Authorization failed: {response.get('error', 'Unknown error')}")
+            return None
+    
+    async def send_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Send request to Deriv API"""
+        for attempt in range(self.config.RETRY_ATTEMPTS):
+            try:
+                if not self.connected or self.ws is None:
+                    await self.connect()
+                
+                await self.ws.send(json.dumps(request))
+                response = await self.ws.recv()
+                return json.loads(response)
+                
+            except Exception as e:
+                self.logger.warning(f"Request failed (attempt {attempt + 1}): {e}")
+                if attempt < self.config.RETRY_ATTEMPTS - 1:
+                    await asyncio.sleep(self.config.RETRY_DELAY * (2 ** attempt))
+                    await self.connect()
+                else:
+                    self.logger.error(f"All request attempts failed: {e}")
+                    return None
+    
+    async def subscribe_to_ticks(self, symbol: str, callback: Callable):
+        """Subscribe to tick data for a symbol"""
+        subscribe_request = {
+            "ticks": symbol,
+            "subscribe": 1
+        }
+        
+        response = await self.send_request(subscribe_request)
+        if response and "error" not in response:
+            self.subscriptions.add(symbol)
+            self.logger.info(f"Subscribed to ticks for {symbol}")
+            
+            # Start listening for ticks
+            asyncio.create_task(self._listen_ticks(callback))
+            return True
+        return False
+    
+    async def _listen_ticks(self, callback: Callable):
+        """Listen for incoming tick data"""
+        while self.connected and self.ws:
+            try:
+                message = await self.ws.recv()
+                data = json.loads(message)
+                
+                if "tick" in data:
+                    await callback(data["tick"])
+                elif "error" in data:
+                    self.logger.error(f"API error: {data['error']}")
+                    
+            except Exception as e:
+                self.logger.error(f"Error reading ticks: {e}")
+                break
+    
+    async def buy_contract(self, symbol: str, amount: float, duration: int = 5, duration_unit: str = "t") -> Optional[Dict]:
+        """Buy a contract"""
+        buy_request = {
+            "buy": 1,
+            "price": amount,
+            "parameters": {
+                "amount": amount,
+                "basis": "stake",
+                "contract_type": "CALL",
+                "currency": "USD",
+                "duration": duration,
+                "duration_unit": duration_unit,
+                "symbol": symbol
+            }
+        }
+        
+        response = await self.send_request(buy_request)
+        if response and "error" not in response:
+            self.logger.info(f"Successfully bought contract: {response}")
+            return response
+        else:
+            self.logger.error(f"Buy contract failed: {response.get('error', 'Unknown error')}")
+            return None
+    
+    async def get_account_balance(self) -> Optional[float]:
+        """Get current account balance"""
+        balance_request = {"balance": 1, "subscribe": 0}
+        response = await self.send_request(balance_request)
+        
+        if response and "balance" in response:
+            return float(response["balance"])
+        return None
+    
+    async def get_profit_analysis(self, contract_id: str) -> Optional[Dict]:
+        """Get profit analysis for a contract"""
+        analysis_request = {"profit_table": 1, "contract_id": contract_id}
+        return await self.send_request(analysis_request)
+    
+    async def disconnect(self):
+        """Disconnect from API"""
+        self.connected = False
+        if self.ws:
+            await self.ws.close()
+        self.logger.info("Disconnected from Deriv API")
+    
+    async def handle_reconnect(self):
+        """Handle reconnection logic"""
+        if self.reconnect_attempts < self.max_reconnect_attempts:
+            self.reconnect_attempts += 1
+            wait_time = self.reconnect_attempts * 5
+            self.logger.info(f"Reconnecting in {wait_time} seconds... (Attempt {self.reconnect_attempts})")
+            
+            await asyncio.sleep(wait_time)
+            await self.connect()
+        else:
+            self.logger.error("Max reconnection attempts reached. Please check your connection.")
